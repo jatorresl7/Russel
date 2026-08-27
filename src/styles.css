@@ -1,0 +1,153 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ══════════════════════════════════════════
+   TEMA — cambiar estos valores y cambia todo
+   Neutros frios + un solo acento azul, heredado del --acc de la consola vieja.
+   ══════════════════════════════════════════ */
+:root {
+  /* Escala neutra — de aca sale todo lo que no es estado */
+  --neutral-050:             #eef2f6;   /* fondo de pagina */
+  --neutral-200:             #cbd5e1;   /* bordes, separadores */
+  --neutral-500:             #64748b;   /* iconos, placeholders (NO texto pequeno) */
+  --neutral-600:             #475569;   /* texto secundario */
+  --neutral-800:             #1e293b;   /* texto principal, color de marca */
+
+  /* Colores de marca */
+  --color-primary:           #1e293b;
+  --color-primary-hover:     #0f172a;
+  /* Anillos de foco: van con alfa ya resuelto — Tailwind no sabe aplicarle
+     un modificador de opacidad (/15) a un var(), y sin color cae al azul
+     por defecto del framework. */
+  --ring-primary:            rgba(30, 41, 59, 0.18);
+  --ring-primary-strong:     rgba(30, 41, 59, 0.32);
+
+  /* Acento — SOLO decorativo: barras, indicadores, foco.
+     Nunca con texto blanco encima, no pasa contraste. */
+  --color-accent:            #4c9aff;
+  --color-accent-hover:      #2f7fe6;
+
+  /* Sidebar */
+  --sidebar-bg:              #eef2f6;
+  --sidebar-text:            #475569;
+  --sidebar-text-hover:      #1e293b;
+  --sidebar-active-bg:       rgba(30, 41, 59, 0.08);
+  --sidebar-border:          #cbd5e1;
+  --sidebar-width:           220px;
+  --sidebar-width-collapsed: 56px;
+
+  /* Superficie. El fondo de pagina va un paso mas oscuro que el sidebar a
+     proposito: con los dos iguales el panel lateral no se despega del
+     contenido. */
+  --bg-page: #e2e8f0;
+
+  /* Radios — el radio dice "esto flota sobre el fondo".
+     Lo que embaldosa borde con borde (filas de tabla, sidebar, encabezados
+     fijos) va sin radio: redondear una celda le roba pixeles al contenido y
+     deja un hueco donde se juntan dos bordes. Dos valores y nada mas. */
+  --radius-tight:   4px;
+  --radius-control: 6px;    /* botones, campos, selects, desplegables */
+  --radius-surface: 8px;    /* tarjetas, modales, contenedores */
+  /* pastillas de estado y avatares: rounded-full, no token */
+}
+
+/* Layout del shell */
+app-root {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* Los componentes de pagina tienen que ser bloque o el layout no los mide */
+app-root,
+russ-page,
+contexto-vivo,
+grafo-vivo,
+conocimiento-page,
+grafo-page,
+consola-page,
+scripts-page,
+tools-page,
+gmail-page,
+sistema-page {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
+
+body {
+  background: var(--bg-page);
+  overflow-x: hidden;
+}
+
+/* Refresco de datos (ver src/crud/carga.ts).
+   `Carga` pone data-refrescando en el componente mientras hay una peticion en
+   vuelo; el componente marca su zona de datos con .carga-contenido. Atenuar en
+   vez de vaciar: cambiar un filtro tiene que cambiar el contenido, no desmontar
+   la vista y volverla a construir. Los filtros NO se atenuan — el control que
+   se acaba de pulsar pareceria deshabilitado. */
+.carga-contenido {
+  transition: opacity .15s ease;
+}
+[data-refrescando] .carga-contenido {
+  opacity: 0.55;
+}
+
+/* Un dato que cambio mientras lo estabas leyendo (ver src/crud/carga.ts).
+   Solo aparece cuando lo que llego del backend es DISTINTO de lo que ya se
+   estaba mostrando — revalidar y que todo siga igual es el caso normal y no
+   avisa nada.
+   Va por `box-shadow` y NO por `background-color`: una animacion gana sobre el
+   estilo en linea, asi que pintar el fondo le borraria el suyo al componente. */
+@keyframes jarvis-actualizado {
+  0%   { box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.95); }
+  60%  { box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.85); }
+  100% { box-shadow: 0 0 0 3px rgba(76, 154, 255, 0); }
+}
+[data-actualizado] .carga-contenido {
+  animation: jarvis-actualizado 3s ease-out;   /* = DURACION_AVISO en carga.ts */
+}
+
+/* ── Desplegables ────────────────────────────────────────────────────────────
+   Un <select> nativo dibuja su propia flecha pegada al borde derecho y NO la
+   separa con el padding: `padding-right` mueve el TEXTO, no la flecha.
+
+   Se apaga la apariencia nativa y la flecha la ponemos nosotros, con su aire y
+   con el gris de la paleta.
+
+   El selector lleva `[class]` a proposito: hay que ganarle al `px-3` de
+   Tailwind, que es una clase (0-1-0), y tipo + atributo suma 0-1-1. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%2364748b'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z' clip-rule='evenodd'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 1rem;
+}
+select[class] {
+  padding-right: 2.15rem;
+}
+
+/* ── Consola ─────────────────────────────────────────────────────────────────
+   El cursor que parpadea al final de la burbuja mientras el LLM escribe. */
+.caret::after {
+  content: "▌";
+  animation: jarvis-blink 1s steps(2) infinite;
+  color: var(--neutral-500);
+}
+@keyframes jarvis-blink { 50% { opacity: 0; } }
+
+/* ── Pastilla de trabajo pesado ──────────────────────────────────────────────
+   Se usa mientras whisper corre la pasada final o mientras cargan los modelos:
+   son los dos momentos en que la maquina tarda segundos. El latido es lo que
+   distingue "esta ocupada" de "se colgo", que desde afuera se ven igual. */
+@keyframes jarvis-latido {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .55; }
+}
+.latiendo { animation: jarvis-latido 1.1s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .latiendo, .caret::after { animation: none; }
+}

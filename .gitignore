@@ -1,0 +1,20 @@
+.env
+token.json
+client_secret_*.json
+__pycache__/
+*.pyc
+
+
+# frontend
+node_modules/
+web/dist/
+
+# config local de herramientas
+.claude/settings.local.json
+
+# artefactos
+*.log
+.DS_Store
+
+# pesos de modelos: los baja ultralytics solo en el primer uso
+*.pt

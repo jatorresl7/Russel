@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jarvis</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --line:#262d36; --txt:#e6edf3;
+    --dim:#8b949e; --acc:#4c9aff; --ok:#3fb950; --warn:#d29922;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; height:100vh; display:flex; flex-direction:column;
+         background:var(--bg); color:var(--txt);
+         font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif; }
+
+  header { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+           padding:10px 14px; border-bottom:1px solid var(--line);
+           background:var(--panel); }
+  h1 { margin:0 8px 0 0; font-size:15px; font-weight:600; letter-spacing:.02em; }
+  .pill { font-size:12px; padding:3px 9px; border-radius:999px;
+          border:1px solid var(--line); color:var(--dim); white-space:nowrap; }
+  .pill.on { color:var(--ok); border-color:#1f4b2b; background:#0f2416; }
+  .pill.busy { color:var(--warn); border-color:#4b3c14; background:#241d0f; }
+  button { font:inherit; font-size:13px; padding:5px 11px; cursor:pointer;
+           border-radius:7px; border:1px solid var(--line);
+           background:#1c232c; color:var(--txt); }
+  button:hover { border-color:var(--acc); }
+  button[disabled] { opacity:.45; cursor:default; }
+  .sep { flex:1; }
+
+  /* barra de nivel de voz: sale directo de la prob del VAD */
+  #vad { width:70px; height:5px; border-radius:3px; background:#1c232c;
+         overflow:hidden; }
+  #vadfill { height:100%; width:0; background:var(--ok); transition:width .1s; }
+
+  main { flex:1; overflow-y:auto; padding:18px 14px; }
+  .wrap { max-width:760px; margin:0 auto; display:flex; flex-direction:column;
+          gap:12px; }
+  .msg { max-width:82%; padding:9px 13px; border-radius:13px;
+         white-space:pre-wrap; word-wrap:break-word; }
+  .msg.user { align-self:flex-end; background:#1d4ed8; border-bottom-right-radius:4px; }
+  .msg.bot  { align-self:flex-start; background:var(--panel);
+              border:1px solid var(--line); border-bottom-left-radius:4px; }
+  .meta { font-size:11px; color:var(--dim); margin:3px 2px 0; }
+  .msg.user + .meta { align-self:flex-end; }
+  .caret::after { content:"▌"; animation:blink 1s steps(2) infinite; color:var(--dim); }
+  @keyframes blink { 50% { opacity:0; } }
+  .vacio { color:var(--dim); text-align:center; margin-top:22vh; font-size:14px; }
+
+  footer { border-top:1px solid var(--line); background:var(--panel); padding:10px 14px; }
+  .barra { max-width:760px; margin:0 auto; display:flex; gap:8px; }
+  input { flex:1; font:inherit; padding:10px 13px; border-radius:9px;
+          border:1px solid var(--line); background:var(--bg); color:var(--txt); }
+  input:focus { outline:none; border-color:var(--acc); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Jarvis</h1>
+  <span class="pill" id="p-mic">micrófono</span>
+  <div id="vad"><div id="vadfill"></div></div>
+  <span class="pill" id="p-llm">llm</span>
+  <span class="pill" id="p-vel">–</span>
+  <span class="sep"></span>
+  <button id="b-mic">Escuchar</button>
+  <button id="b-llm">Prender LLM</button>
+  <button id="b-clear">Limpiar</button>
+</header>
+
+<main><div class="wrap" id="chat">
+  <div class="vacio">Escribile abajo, o prendé el micrófono y hablale.</div>
+</div></main>
+
+<footer><div class="barra">
+  <input id="txt" placeholder="Escribí algo…" autocomplete="off" autofocus>
+  <button id="b-send">Enviar</button>
+</div></footer>
+
+<script>
+const $ = s => document.querySelector(s);
+// El input nunca se bloquea: si Russ esta contestando, lo que escribas queda
+// en el slot y pisa lo que hubiera pendiente.
+const chat = $("#chat");
+let burbuja = null, escuchando = false, llmOn = false;
+
+function limpiarVacio() { const v = chat.querySelector(".vacio"); if (v) v.remove(); }
+
+function abajo() { chat.parentElement.scrollTop = chat.parentElement.scrollHeight; }
+
+function agregar(clase, texto, meta) {
+  limpiarVacio();
+  const d = document.createElement("div");
+  d.className = "msg " + clase;
+  d.textContent = texto;
+  chat.appendChild(d);
+  if (meta) {
+    const m = document.createElement("div");
+    m.className = "meta"; m.textContent = meta;
+    chat.appendChild(m);
+  }
+  abajo();
+  return d;
+}
+
+// --- SSE: la conversacion entera llega por aca, venga de voz o de teclado ---
+const es = new EventSource("/assistant/stream");
+es.onmessage = e => {
+  const ev = JSON.parse(e.data);
+  if (ev.tipo === "user") {
+    agregar("user", ev.text, (ev.origen === "voz" ? "🎙 voz" : "⌨ texto") + " · " + ev.at);
+  } else if (ev.tipo === "start") {
+    burbuja = agregar("bot", "");
+    burbuja.classList.add("caret");
+  } else if (ev.tipo === "token") {
+    if (!burbuja) { burbuja = agregar("bot", ""); burbuja.classList.add("caret"); }
+    burbuja.textContent += ev.text;
+    abajo();
+  } else if (ev.tipo === "end") {
+    if (burbuja) {
+      burbuja.classList.remove("caret");
+      burbuja.textContent = ev.text;
+      const m = document.createElement("div");
+      m.className = "meta";
+      m.textContent = `${ev.tok_s} tok/s · ${(ev.ms / 1000).toFixed(1)}s`;
+      chat.appendChild(m);
+    }
+    burbuja = null;
+    $("#p-vel").textContent = ev.tok_s + " tok/s";
+    abajo();
+  } else if (ev.tipo === "pisado") {
+    // Llego algo nuevo antes de que atendiera lo anterior. Se muestra tachado
+    // para que se entienda por que nunca contesto eso.
+    const d = agregar("user", ev.text, "⏭ pisado por algo mas nuevo");
+    d.style.opacity = ".45";
+    d.style.textDecoration = "line-through";
+  } else if (ev.tipo === "error") {
+    agregar("bot", "⚠ " + ev.text);
+  } else if (ev.tipo === "clear") {
+    chat.innerHTML = '<div class="vacio">Listo, historial vacío.</div>';
+  }
+};
+
+// --- estado: el VAD y el mic no van por SSE, se preguntan cada 400ms ---
+async function refrescar() {
+  try {
+    const a = await (await fetch("/audio/status")).json();
+    escuchando = a.listening;
+    $("#p-mic").className = "pill" + (a.speaking ? " on" : "");
+    $("#p-mic").textContent = a.listening ? (a.speaking ? "hablando" : "escuchando") : "micrófono";
+    $("#vadfill").style.width = Math.round((a.vad || 0) * 100) + "%";
+    $("#b-mic").textContent = a.listening ? "Cortar" : "Escuchar";
+
+    const l = await (await fetch("/assistant/status")).json();
+    llmOn = l.activo;
+    $("#p-llm").className = "pill" + (l.generando ? " busy" : (l.cargado ? " on" : ""));
+    $("#p-llm").textContent = l.generando ? "generando…"
+      : (l.cargado ? l.modelo.split("/")[1] : "llm apagado");
+    $("#b-llm").textContent = l.activo ? "Apagar LLM" : "Prender LLM";
+  } catch (e) { /* servidor reiniciando */ }
+}
+setInterval(refrescar, 400); refrescar();
+
+// --- acciones ---
+$("#b-mic").onclick = () => fetch(escuchando ? "/audio/stop" : "/audio/start", {method:"POST"}).then(refrescar);
+$("#b-llm").onclick = () => fetch("/system/toggle", {
+  method:"POST", headers:{"Content-Type":"application/json"},
+  body: JSON.stringify({modulo:"llm", on: !llmOn})
+}).then(refrescar);
+$("#b-clear").onclick = () => fetch("/assistant/clear", {method:"POST"});
+
+function enviar() {
+  const t = $("#txt").value.trim();
+  if (!t) return;
+  $("#txt").value = "";
+  // No pintamos la burbuja aca: llega por SSE, igual que la voz. Un solo camino.
+  fetch("/assistant/ask", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({text: t})
+  }).then(r => r.json()).then(r => {
+    if (!r.ok) agregar("bot", "(" + r.motivo + ")");
+  });   // la respuesta llega por SSE, no por aca
+}
+$("#b-send").onclick = enviar;
+$("#txt").addEventListener("keydown", e => { if (e.key === "Enter") enviar(); });
+</script>
+</body>
+</html>

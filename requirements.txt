@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+python-dotenv
+google-auth-oauthlib
+google-api-python-client
+groq
+openai
+google-genai
+ultralytics
+opencv-python
+llama-cpp-python
+huggingface-hub
+sentence-transformers
+pgvector
