@@ -622,6 +622,41 @@ def _nombrar(label: str, n: int) -> str:
     return f"{NUMEROS.get(n, n)} {plural}"
 
 
+_abriendo = threading.Event()
+
+
+def abrir_al_arrancar() -> None:
+    """Abre los ojos al levantar el server, y SOLO ahi.
+
+    LOS OJOS NO SE ABREN DESDE UN TURNO, y esto costo un deadlock entero.
+    Hasta aca `ensure_worker()` se llamaba unicamente desde `mjpeg_stream()`:
+    Russ veia solo mientras hubiera una pestaña del navegador mostrando la
+    camara. Con la consola cerrada el modulo figuraba encendido, ningun hilo
+    leia /dev/video0, y a alguien parado enfrente le contestaba que no lo veia.
+
+    El arreglo obvio —abrirla desde `lo_que_veo()`, que es donde se nota que
+    falta— colgo el server ENTERO. El hilo del turno estaba importando
+    `transformers` y el detector recien lanzado importaba `torchvision`; los
+    dos arrastran `torch` y tomaron los locks de modulo en orden distinto.
+    Deadlock circular de importacion: dejaron de responder TODOS los endpoints,
+    incluso los que no tocan camara ni LLM, porque cualquier handler que
+    importe algo espera el mismo lock.
+
+    Al arrancar no hay ningun turno en curso, asi que las importaciones pesadas
+    no compiten. Y ademas es lo correcto: los ojos se abren al despertar, no la
+    primera vez que alguien pregunta.
+    """
+    if _abriendo.is_set() or not runtime.activo("vision"):
+        return
+    _abriendo.set()
+    try:
+        ensure_worker()
+    except Exception:
+        pass          # sin camara Russ sigue hablando; no es fatal
+    finally:
+        _abriendo.clear()
+
+
 def lo_que_veo(maximo: int = 5) -> dict:
     """Lo que la camara tiene enfrente ahora mismo, en palabras.
 

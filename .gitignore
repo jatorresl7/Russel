@@ -18,3 +18,11 @@ web/dist/
 
 # pesos de modelos: los baja ultralytics solo en el primer uso
 *.pt
+
+# voces de Piper: 390 MB de .onnx que se bajan solos con
+#   python -m piper.download_voices --download-dir voces <nombre>
+voces/
+
+# sonidos de evento: los de fabrica los regenera `python generar_sonidos.py`,
+# y los que grabes vos son tuyos y no del repo
+sonidos/

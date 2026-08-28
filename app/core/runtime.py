@@ -10,10 +10,14 @@ detecta y les cambia el dispositivo solo.
 import os
 import threading
 
-MODULOS = ("vision", "asr_stream", "asr_final", "vad", "llm", "embed", "iniciativa")
+MODULOS = ("vision", "asr_stream", "asr_final", "vad", "llm", "embed",
+           "iniciativa", "tts", "traductor", "busqueda")
 
 # Peso relativo de cada modulo al repartir los hilos de CPU.
+# El TTS pesa poco: Piper sintetiza una frase en decimas de segundo y el
+# resto del tiempo el hilo esta dormido esperando la cola.
 PESOS = {"vision": 6, "asr_stream": 3, "asr_final": 9, "vad": 1, "llm": 4,
+         "tts": 2, "traductor": 2, "busqueda": 1,
          "embed": 2, "iniciativa": 0}
 
 # Que se enciende por defecto. En CPU, tener todo prendido satura la maquina;
@@ -28,7 +32,7 @@ POR_DEFECTO = {"vision": True, "asr_stream": False, "asr_final": True,
                "vad": True, "llm": False, "embed": True,
                # La unica arista que hace que Russ hable sin que le hablen.
                # Apagada: es la que hay que ajustar viendola fallar.
-               "iniciativa": False}
+               "iniciativa": False, "tts": True, "traductor": False, "busqueda": True}
 
 _lock = threading.Lock()
 _activos = dict(POR_DEFECTO)

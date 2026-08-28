@@ -27,3 +27,4 @@ import './modules/conocimiento/conocimiento.form';
 import './modules/grafo/grafo-vivo';
 import './modules/grafo/grafo.page';
 import './modules/sistema/sistema.page';
+import './modules/voz/voz.page';

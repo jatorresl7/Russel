@@ -250,6 +250,16 @@ def _procesador():
                 else:
                     _estado["vosk"] = json.loads(rec.PartialResult()).get("partial", "").strip()
             hay_voz = prob >= VAD_UMBRAL
+            # El sonido va en el FLANCO de subida, no mientras `hay_voz` sea
+            # cierto: esto corre por cada frame de 32 ms, asi que sin comparar
+            # con el estado anterior serian treinta blips por segundo encima de
+            # la voz de quien habla.
+            if hay_voz and not _estado["speaking"]:
+                try:
+                    from app.services import tts_service
+                    tts_service.sonar("escuchando")
+                except Exception:
+                    pass          # sin sonido se sigue escuchando igual
             _estado["speaking"] = hay_voz
 
             if hay_voz:

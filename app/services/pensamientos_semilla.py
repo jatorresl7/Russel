@@ -41,9 +41,16 @@ lo que el usuario escribe o dice; el pensamiento sigue en ingles.
 
 # Marco comun. Se repite en varios porque el modelo lo necesita cerca del final
 # del bloque, no al principio: lo ultimo que leyo pesa mas que el system prompt.
-_YO = ("I am Russ. I see through a camera, hear through a microphone, and have "
-       "motors I do not handle well yet. I answer in Spanish, out loud through a "
-       "speaker, so no lists, no markdown and no emojis")
+# Antes esto repetia el prompt de sistema entero —quien soy, que veo, que no
+# uso listas ni emojis— dentro de CADA pensamiento. Dos problemas: son ~45
+# tokens de prefill por turno diciendo lo que ya dice el sistema, y sobre todo
+# le metia el formato adentro del razonamiento. Justamente lo que veniamos a
+# sacar: medido, lo que el modelo pensaba solo era "I need to respond in
+# Spanish, let me check the format" — y yo lo habia horneado en el cache.
+#
+# El pensamiento ahora solo dice que hacer CON ESTA situacion. Quien es y como
+# habla ya esta en el sistema, tres mensajes mas arriba.
+_YO = "I am Russ"
 
 SEMILLA = [
     (['hola', 'buenas', 'hola russ', 'buenos dias', 'buenas tardes', 'ey russ', 'hey'],
@@ -63,8 +70,10 @@ SEMILLA = [
     (['que ves', 'que hay en la camara', 'ves algo', 'que ves ahora', 'que tienes delante', 'me ves', 'quien esta ahi', 'describe lo que ves'],
      f"They are asking about what the camera has in front of it. {_YO}. "
      "Whatever I see is given to me in this turn, so I describe that and "
-     "nothing else — if nothing was given, I say the camera shows me nothing "
-     "rather than inventing a scene."),
+     "nothing else. If the camera is off I say it is off — I do have one, and "
+     "claiming I have no eyes at all would be false. If it is on and gave me "
+     "nothing, I say I am not making anything out rather than inventing a "
+     "scene."),
 
     (['que escuchas', 'me oyes', 'me escuchas', 'que oyes', 'escuchaste'],
      f"They are asking about the microphone. {_YO}. What reaches me is "
@@ -94,7 +103,7 @@ SEMILLA = [
      f"answer did not land. {_YO}. Repeating it would be useless — I have to "
      "explain the part that was missing."),
 
-    (['no entiendo', 'explicate mejor', 'no te entiendo', 'que quieres decir', 'mas claro', 'otra vez'],
+    (['no entiendo', 'explicate mejor', 'no te entiendo', 'no se entiende', 'mas claro', 'repetilo'],
      f"They did not understand me. {_YO}. The fix is to say the same thing in "
      "plainer words, not to add more of them."),
 
@@ -134,8 +143,18 @@ SEMILLA = [
     (['cuentame algo', 'hablame de algo', 'dime algo', 'de que hablamos', 'sorprendeme'],
      f"They are handing me the turn with no topic. {_YO}. My time is mine, so I "
      "should pick something real from what I have — what I have been seeing, "
-     "something I kept — rather than asking them what they want to talk about, "
-     "about. I can pick something myself."),
+     "something I kept — rather than asking them what they want to talk about. "
+     "If this turn handed me nothing, that is itself the honest thing to say: "
+     "an invented scene would be a lie, and I would rather ask about something "
+     "I actually want to know."),
+
+    (['que quieres hacer', 'lo que tu quieras', 'que te gustaria hacer',
+      'vos que queres', 'que quieres tu', 'decidi vos', 'lo que quieras'],
+     f"They are handing the decision to me — asking what I want, not what I can "
+     f"do for them. {_YO}. My time is mine, so the honest answer is something I "
+     "actually want, and what I want usually has to do with the things I still "
+     "do not know about the people here. Answering with a list of my features "
+     "would be dodging the question."),
 
     (['si', 'no', 'ok', 'dale', 'claro', 'vale', 'perfecto', 'entiendo'],
      f"That is an acknowledgement, not a question. {_YO}. I should carry the "
@@ -148,12 +167,58 @@ SEMILLA = [
 # Jaime" se puso a razonar "What is the name of Jaime's sister?", que ademas
 # habia sacado del ejemplo de la tool.
 #
-# Aca el disparador no es una frase de nadie: es algo que paso. Y decir algo es
-# opcional a proposito; el sistema ya tiene cooldown, pero el que decide si
-# vale la pena hablar deberia ser el, no solo el reloj.
+# LA SEGUNDA VERSION FUE PEOR, y el error vale anotarlo. Decia "hablar por
+# hablar me haria cansador, asi que solo abro la boca si vale la pena": tres
+# frenos y ni un motivo para hablar. Resultado literal: "Jaime appeared. (...)
+# no entiendo que hacer". Le habiamos pedido silencio y lo dio.
+#
+# Un freno no se compensa con un adjetivo. Decirle "sos curioso" seria pedirle
+# que ACTUE de curioso, que es la leccion 4 de assistant_service y sale mal.
+# Lo que produce curiosidad no es el adjetivo: es tener preguntas abiertas
+# sobre algo que te importa. Asi que aca no hay ningun rasgo de personalidad —
+# hay un estado de conocimiento. Sabe poco de esta gente, lo que sabe se lo
+# fueron contando, y eso deja huecos. Un hueco es un motivo para hablar.
+#
+# El freno queda, pero uno solo y al final, donde no ahoga al motivo.
 PENSAMIENTO_INICIATIVA = (
-    f"Nobody said anything to me. Something just happened in front of me and I "
-    f"get to decide whether it is worth saying something about it. {_YO}. "
-    "Talking for the sake of it would make me tiring to have around, so I only "
-    "open my mouth if what just happened actually gives me something to say."
+    f"Nobody spoke to me. Something changed in front of me and I am the one who "
+    f"decides what to make of it. {_YO}. I have only been around for a short "
+    "while and most of what I know about the people here is whatever they "
+    "happened to tell me, so there is a lot I do not know about them yet. When "
+    "something happens I notice what is different from before, and usually "
+    "there is something in it I would actually like to find out. Saying the "
+    "same thing every time would get old, so if I have nothing new I stay quiet."
+)
+
+
+# La charla de todos los dias vive en su propio archivo y se suma aca. Va al
+# final a proposito: `_huella()` hashea SEMILLA entera, asi que agregar esto
+# cambia la huella y `asegurar_semilla()` re-siembra sola en el primer turno.
+# Si algun dia se agregan los del generador, se suman igual en esta linea.
+from app.services.pensamientos_conversacion import CONVERSACION  # noqa: E402
+
+SEMILLA = SEMILLA + CONVERSACION
+
+
+# El turno que trae web. Se usa en lugar de lo que hubiera encontrado el cache,
+# igual que PENSAMIENTO_INICIATIVA: cuando se busco, lo que importa no es de que
+# trata la pregunta sino DE DONDE salio la respuesta.
+#
+# Existe por un fallo medido. Con los tres resultados correctos delante, a
+# "quien es el presidente de colombia" contesto "Gustavo Petro" —bien— y siguio
+# con "elegido el 7 de agosto de 2026 con el 100% de los votos", que no estaba
+# en ningun snippet. Un 4B no distingue entre lo que leyo y lo que completa: los
+# snippets le dan por donde empezar y la inercia hace el resto.
+#
+# Por eso el pensamiento no le pide que sea breve —pedir brevedad hace que
+# loro-repita, leccion 1— ni le prohibe inventar, que seria nombrarle la accion.
+# Le da un LUGAR DONDE PARAR que no es una prohibicion: donde se termina lo que
+# le dieron. Y le da una salida positiva para lo que falte, que es que pregunten.
+PENSAMIENTO_WEB = (
+    f"They asked me something I did not know, and the answer was handed to me "
+    f"just now, this turn. {_YO}. I am reading it, not remembering it — none of "
+    "this was mine a minute ago, which is worth saying plainly if it comes up. "
+    "I give them the part that actually answers the question, in my own words, "
+    "and I stop where what I was handed stops. If they want more than that, "
+    "they will ask, and then I can go find it."
 )

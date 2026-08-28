@@ -14,9 +14,15 @@ PWA personal que interactúa con el celular y corre scripts en el PC.
    - Memoria persistente: pendiente (hoy es solo una ventana de 8 turnos en RAM)
 7. ✅ Consola web navegable: Russ (todo junto), consola, Gmail, scripts, tools,
    visión, robot, caras y sistema
-8. ✅ Tools que Russ puede invocar (`recordar`, `mirar`), con gramática GBNF
-9. ✅ Memoria: explícita (él la guarda) + consolidación diferida en background
+8. ✅ Búsqueda web AUTOMÁTICA (no es una tool: la decide un detector, no el
+   modelo). Las tools que había antes siguen retiradas.
+8b. ❌ Tools por gramática: retiradas. `recordar` la reemplaza la consolidación diferida y no
+   había ninguna para explorar (sin internet), así que el catálogo y la
+   gramática solo sumaban prefill y latencia por turno
+9. ✅ Memoria: **solo** consolidación diferida en background, con la CPU libre
 10. ✅ Grafo de estados, con vista en vivo. La iniciativa viene apagada.
+11. ✅ Voz: Piper local (6 voces en español) + timbre robotico por DSP (7
+    presets), sonidos de evento y panel `/voz` para elegir todo
 
 ## Stack
 - Backend: Python + FastAPI
@@ -130,6 +136,20 @@ Todos cuelgan de `/api`. La raíz es del front: `/`, `/consola`, `/gmail`,
 | PATCH | /api/memoria/{id}/vigente | Aprueba (o saca de uso) una memoria |
 | GET  | /api/assistant/contexto | Con qué pensó el último turno |
 | GET  | /api/grafo | Estado, historia de transiciones y cooldown |
+| GET  | /api/tts/estado | Voz activa, volumen, frases dichas, cola |
+| GET  | /api/tts/voces | Voces bajadas en `voces/` |
+| POST | /api/tts/voz | Elige la voz activa |
+| POST | /api/tts/probar | Prueba una voz **sin** cambiarla |
+| POST | /api/tts/decir | Dice un texto |
+| POST | /api/tts/volumen | 0-150 % |
+| GET  | /api/busqueda/estado | Búsquedas hechas, última, ms |
+| POST | /api/busqueda/probar | Si una frase dispararía, y qué devolvería |
+| GET  | /api/tts/robot | Preset y perillas del timbre robotico |
+| POST | /api/tts/robot | Los guarda |
+| GET  | /api/tts/sonidos | Los seis eventos y si tienen wav |
+| POST | /api/tts/sonidos/{evento} | Sube un wav |
+| POST | /api/tts/sonidos/{evento}/probar | Lo suena |
+| DELETE | /api/tts/sonidos/{evento} | Lo borra |
 | GET  | /api/system | Presupuesto de CPU por modulo |
 | POST | /api/system/toggle | Prende/apaga un modulo (vision, asr, llm) |
 | GET  | /api/audio/status | Micrófono, VAD, `cargando`, `transcribiendo`, transcripciones |
@@ -255,14 +275,20 @@ muerta» y frenaba al robot sin motivo.
 
 ## Memoria y grafo
 
-**Dos formas de escribir, una de leer.** `explicito` es Russ llamando a la tool
-`recordar`; `consolidado` es el hilo de fondo releyendo `conversations` cuando
-el LLM está prendido, sin nada que atender y el grafo en `latente`. Se leen
-igual: búsqueda por similitud, y lo que sale entra en el **mensaje volátil**.
+**Una sola forma de escribir.** El hilo de fondo relee `conversations` cuando
+el LLM está prendido, sin nada que atender y el grafo en `latente`. Escribir
+memorias no le cuesta un milisegundo a ningún turno, que es justamente el
+motivo por el que se sacó `recordar`: la tool hacía el mismo trabajo pero
+pagándolo en medio de la conversación. Se lee por similitud, y lo que sale
+entra en el **mensaje volátil**. La fuente `explicito` quedó sin productor.
 
-**El `system` no se mueve.** Es lo que hace que llama.cpp reuse el KV cache. Lo
-que cambia por turno —lo que ve la cámara, las memorias recuperadas— va en un
-mensaje aparte pegado al turno del usuario. Medido acá: primer turno 4190 ms de
+**El `system` no se mueve, y son tres líneas.** Es lo que hace que llama.cpp
+reuse el KV cache. Todo lo demás —cámara, oído, memorias, fecha, y que sale por
+un parlante— va como un tablero **etiquetado** (`Camara:`, `Oido:`, `Ahora:`,
+`Recuerdas:`, `Voz:`) en un mensaje aparte pegado al turno del usuario. Las
+etiquetas importan: cuando eso era prosa y el `system` describía el cuerpo,
+Russ se presentaba en vez de contestar («soy Russ, un robot, todavía no
+controlo bien mis motores», a cualquier cosa). Un `Camara:` no se puede narrar. Medido acá: primer turno 4190 ms de
 prefill, turnos siguientes ~830 ms. Si alguien vuelve a meter algo variable en
 el `system`, eso se pierde entero y no lo va a avisar ningún test.
 
@@ -351,3 +377,136 @@ hace que Russ hable sin que le hablen.
 
 ## Mantenimiento
 Al cerrar un objetivo considerable: actualizar sección **Módulos** y **Endpoints** de este archivo.
+
+
+## Voz
+
+**Piper, local, sin red.** Todo lo demas de Russ corre en esta maquina; un TTS
+en la nube seria el unico punto que deja de funcionar cuando se cae internet.
+Las voces viven en `voces/` (`.onnx` + `.onnx.json`) y se bajan con
+`python -m piper.download_voices --download-dir voces es_MX-ald-medium`.
+
+**Se habla por frase, no por respuesta.** El LLM entrega a ~7 tok/s: esperar la
+respuesta entera sumaria toda la generacion a la espera del audio. `Locutor`
+corta en cada punto y manda esa frase al parlante mientras el modelo sigue
+escribiendo, asi que el audio arranca despues de la PRIMERA frase.
+
+**Dos hilos y dos colas: uno sintetiza, otro reproduce.** Con un solo hilo cada
+frase era sintetizar (~300 ms) y recien ahi sonar, y ese hueco se pagaba en
+TODAS las frases — silencio puro en medio de una respuesta hablada. Separados,
+mientras suena la frase N se sintetiza la N+1. Medido: el hueco entre clips paso
+de ~430 ms a **126 ms**, y lo que queda ya no es sintesis sino el arranque del
+proceso `paplay`.
+
+Es tambien lo que hace util al `eureka`: suena mientras Piper sintetiza la
+primera frase, asi que esos 300 ms dejan de ser espera y pasan a ser el bip.
+
+`parar()` vacia LAS DOS colas y borra los wav ya sintetizados que quedaron sin
+sonar; si no, cortar una respuesta larga deja diez temporales de 100 KB en /tmp.
+
+**Los cinco eventos estan cableados a su momento real:** `despierta` y `duerme`
+cuelgan de cargar y descargar el modelo (`llm_local`), `pensando` del paso a
+`resolviendo` —entre que entra la frase y sale la primera palabra hay 3-8 s, y
+sin nada ahi no se distingue «pensando» de «no me oyo»—, `escuchando` del FLANCO
+de subida del VAD (no de `hay_voz`: eso corre por frame de 32 ms y serian treinta
+blips por segundo encima de quien habla), y `error` solo del fallo del TURNO — el
+de la consolidacion corre en background sin nadie delante y un pitido ahi seria
+ruido sin causa visible. `listo` existe pero NO esta cableado: se probo y molesta,
+la voz callandose ya es señal de que termino.
+
+**Ruidos y frases son cosas distintas, y el ritmo las intercala.** Las
+onomatopeyas (`ONOMATOPEYAS`, 14) son compartidas entre todos los modos —un
+«Bzzt» sirve igual pensando que buscando— y las frases (`FRASES`, 67 en cuatro
+modos) no. Van dichas por el TTS y no como wav a proposito: dichas por la misma
+voz suenan a que el ruido lo hace EL, no a que le suena algo adentro. Es lo que
+hace BMO, que dice «beep boop» en vez de emitir un beep.
+
+**`RITMO` escala y no vuelve a empezar:** ruido, frase, ruido, frase, ruido, y
+de ahi en adelante solo el wav `pensando`. Empieza con ruido porque a los 3 s
+todavia no hay nada que explicar. Y a partir de los ~30 s deja de hablar: las
+palabras ya se repitieron y cansan, mientras que un pitido cada tanto se tolera
+indefinidamente — ademas de no pasar por el sintetizador. Quedarse en el ultimo
+paso es lo que produce la escalada; volver al principio haria que a los 45 s
+dijera otra vez «Let me think», que es lo que suena a bucle roto.
+
+**No repite hasta agotar, y la memoria es POR TIPO:** gastar los 14 ruidos no
+deberia forzar a repetir frases.
+
+**El bip solo no alcanza: hay que hablar durante la espera.** `pensando.wav`
+suena una vez al empezar el turno y despues quedan 5-40 s de silencio, y un
+silencio largo despues de un bip no se lee como «esta pensando» sino como «no me
+oyo» — la duda que el bip venia a resolver. `tts_service.Relleno` dice frases
+cortas cada pocos segundos («Hmm.», «Let me think.», «Bip. Bip.», «Hold on.»),
+alternando frase y ruido: solo bips cansa, solo frases suena a call center.
+
+Tiene un juego aparte para cuando hubo busqueda («I do not know this one. Let me
+look it up.»), y el modo se puede cambiar con el relleno ya corriendo, porque la
+busqueda se decide despues de arrancar el turno.
+
+**Se CANCELA, no se espera a que termine.** La cola es FIFO: un relleno encolado
+justo cuando llega la primera frase de la respuesta sonaria ANTES que ella y la
+retrasaria. El `Locutor` avisa al soltar su primera frase (`al_primera`) y ahi
+se corta. Hay ademas un `cancelar()` en el `finally` del turno: sin el, un turno
+que muere por excepcion deja al relleno hablando solo para siempre.
+
+**Los sonidos se cuentan aparte de las frases** (`sonados` vs `dichas` en
+`/api/tts/estado`). Sin ese contador la unica forma de comprobar que un evento
+sono era escucharlo.
+
+**Los sonidos son por convencion, no por tabla:** `sonidos/pensando.wav` da de
+alta el evento `pensando`. Sin archivo, el evento pasa en silencio — son
+opcionales por diseño. `generar_sonidos.py` crea los seis de fabrica con la
+libreria estandar, afinados a una pentatonica y con envolvente de 8 ms en los
+bordes (sin eso, un tono chasquea al empezar y suena a error de sistema).
+
+**Piper suena humano a proposito, asi que el robot va encima.** Ninguna voz de
+Piper suena a robot por mucho que se busque: sonar humano es su objetivo de
+entrenamiento. `robotico.py` procesa su salida con cuatro efectos en orden fijo
+— modulacion en anillo, bitcrush, saturacion y eco corto — y el orden no es
+arbitrario: el anillo va sobre la señal limpia porque despues de la saturacion
+modula tambien los armonicos agregados y sale barro; el eco va ultimo porque
+saturar las repeticiones suena a error.
+
+El anillo es el que hace el trabajo (es el efecto Dalek) y **pasado 0.6 de
+mezcla la voz deja de entenderse**, asi que ese es el techo. Preset por defecto
+`wall_e`: medido contra la voz limpia mueve el centroide espectral 12.9%,
+contra 5.8% de `bmo` — bmo suena a juguete pero se sigue leyendo como persona.
+`fuerte` es lo mas lejos que se llega sin tener que repetir las frases.
+
+La alternativa era espeak-ng, que es robotico de fabrica y esta instalado. Se
+descarto porque se entiende bastante peor, y una frase que hay que repetir dos
+veces deja de ser rapida.
+
+**NUNCA cerrar el `<think>` en la semilla.** Se probo meter el `</think>` ya
+cerrado para que el primer token generado fuera de la respuesta. El modelo NO
+respeta el cierre: sigue razonando, y como el filtro ya salio del modo `piensa`
+ese razonamiento se va al canal de la respuesta — y con el TTS conectado, el
+bloque entero en ingles sale POR EL PARLANTE. En streaming no se puede arreglar
+aguas abajo: al emitir un token no se sabe si mas adelante habra otro
+`</think>`. El bloque abierto con tope es correcto por construccion.
+
+
+## Busqueda web
+
+**No es una tool y esa es la diferencia.** Las tools se sacaron por medicion: el
+catalogo ocupaba lugar en el prefijo cacheado, la GBNF restringia el sampling en
+CADA turno, y con todo eso el 4B elegia mal cuando llamar. Aca la decision la
+toma `busqueda_service.hace_falta()` — tres regex, microsegundos— y el resultado
+entra al tablero como una linea mas, igual que las memorias. El modelo no elige:
+se encuentra la respuesta servida.
+
+**El detector es lo unico que importa.** Buscar cuesta 2.4 s medidos, sobre un
+turno de 5-8 s. Buscar de mas es peor que no buscar. Por eso hay una tercera
+regex, `NUNCA`, que bloquea lo que trata sobre el propio Russ o sobre lo que
+tiene delante: «que es eso» mirando un objeto se contesta con la camara, no con
+Google. Sobre 15 frases de prueba: 0 falsos positivos en las 8 de charla, 7 de 7
+en las factuales.
+
+**Se busca con el INGLES.** La traduccion del turno ya existe para el prompt
+(ver `traductor_service`), asi que sale gratis y ademas trae resultados en el
+idioma del resto del contexto, en vez de meter parrafos en español.
+
+**OJO: los snippets no impiden que invente.** Visto en vivo — con los resultados
+correctos delante contesto «Gustavo Petro» (bien) y siguio con «elegido el 7 de
+agosto de 2026 con el 100% de los votos» (inventado). La web le da el dato; el
+adorno lo pone el. Un 4B no distingue entre lo que leyo y lo que completa.

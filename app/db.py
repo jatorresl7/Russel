@@ -115,14 +115,21 @@ class Pensamiento(Base):
 
     `disparador` es la frase canonica de la que sale el vector. `texto` es lo
     que se precarga. `usos` deja ver cuales trabajan y cuales nunca aciertan.
+
+    `modelo` guarda QUE modelo de embeddings produjo `vector`, y solo eso — sin
+    hashes del catalogo pegados. Es lo que permite sembrar de forma incremental:
+    una fila cuyo texto no cambio y cuyo modelo sigue siendo el mismo ya tiene
+    el vector correcto y no hay que recalcularlo. Antes aca iba
+    `modelo#huella_del_catalogo_entero`, asi que tocar UN pensamiento invalidaba
+    las 292 filas y las re-vectorizaba todas.
     """
     __tablename__ = 'pensamientos'
 
     id = Column(Integer, primary_key=True)
-    disparador = Column(Text, nullable=False)
+    disparador = Column(Text, nullable=False, unique=True, index=True)
     texto = Column(Text, nullable=False)
     vector = Column(Vector(DIMS_MEMORIA))
-    modelo = Column(String(80), nullable=False)
+    modelo = Column(String(80), nullable=False, index=True)
     usos = Column(Integer, default=0)
     ultimo_uso = Column(DateTime)
     vigente = Column(Boolean, default=True, index=True)

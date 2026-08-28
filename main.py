@@ -1,14 +1,45 @@
 import os
+import threading
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.db import init_db
+from app.services import vision_service
 from app.routers import (gmail, tools, work_scripts, chat, vision, robot,
-                         audio, system, assistant, faces, memoria, grafo)
+                         audio, system, assistant, faces, memoria, grafo, tts,
+                         busqueda)
 
 app = FastAPI(title="Jarvis API")
+
+
+def _calentar():
+    """Calienta los modulos pesados EN UN SOLO HILO Y EN ORDEN.
+
+    Hoy queda uno solo (la camara), pero la lista y el orden se conservan
+    porque el problema vuelve apenas se agregue el segundo. Vision importa
+    `torchvision`; cualquier otro modulo que importe `transformers` arrastra
+    `torch` y `sklearn` igual, y lanzados en hilos separados toman los locks de
+    modulo en orden distinto y se traban entre si — deadlock circular de
+    importacion, con TODOS los endpoints dejando de responder, incluso los que
+    no tocan esos modulos, porque cualquier handler que importe algo espera el
+    mismo lock.
+
+    Paso dos veces el mismo dia: abriendo la camara desde `lo_que_veo()` contra
+    el turno del asistente, y despues lanzando camara y traductor a la vez
+    desde el arranque. Secuencial no tiene el problema: mientras uno importa,
+    el otro todavia no empezo. QUIEN AGREGUE ALGO PESADO, QUE LO AGREGUE A ESTA
+    LISTA Y NO A UN HILO PROPIO.
+
+    En un hilo aparte y no en el startup a secas para no bloquear el arranque
+    del server mientras se cargan modelos.
+    """
+    for nombre, tarea in (("camara", vision_service.abrir_al_arrancar),):
+        try:
+            tarea()
+        except Exception as e:
+            print(f"[jarvis] {nombre} no disponible ({type(e).__name__}); sigo.")
 
 
 @app.on_event("startup")
@@ -19,6 +50,9 @@ def startup():
         # Sin postgres se pierden los historiales, pero audio, vision y el
         # LLM local no dependen de la DB para funcionar.
         print(f"[jarvis] DB no disponible ({type(e).__name__}); sigo sin ella.")
+
+    # Los pesados se calientan en UN hilo y EN ORDEN. Ver `_calentar`.
+    threading.Thread(target=_calentar, daemon=True, name="calentar").start()
 
 
 @app.on_event("shutdown")
@@ -43,6 +77,8 @@ app.include_router(assistant.router, prefix=API)
 app.include_router(faces.router, prefix=API)
 app.include_router(memoria.router, prefix=API)
 app.include_router(grafo.router, prefix=API)
+app.include_router(tts.router, prefix=API)
+app.include_router(busqueda.router, prefix=API)
 
 # ── Front ───────────────────────────────────────────────────────────────────
 # El front es la SPA de web/ (fuente en src/, bundle en web/dist via `npm run

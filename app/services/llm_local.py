@@ -83,7 +83,7 @@ TOPE_PENSAMIENTO = int(os.environ.get("JARVIS_THINK_TOPE", "80"))
 
 # Tope cuando el pensamiento vino del cache. Mucho mas bajo porque el trabajo
 # ya esta hecho: lo unico que falta es cerrar la frase y pasar a contestar.
-TOPE_CON_CACHE = int(os.environ.get("JARVIS_THINK_TOPE_CACHE", "24"))
+TOPE_CON_CACHE = int(os.environ.get("JARVIS_THINK_TOPE_CACHE", "16"))
 
 # Arranque del <think>, ya escrito por nosotros. Vacio = que empiece solo.
 #
@@ -108,7 +108,7 @@ TOPE_CON_CACHE = int(os.environ.get("JARVIS_THINK_TOPE_CACHE", "24"))
 # seguir la frase con el contenido real en vez de arrancar un parrafo nuevo.
 PREFIJO_PENSAMIENTO = os.environ.get(
     "JARVIS_THINK_PREFIJO",
-    "The user writes in Spanish and I answer in Spanish; no translation needed. "
+    "They write in Spanish and I answer in English; I understand them fine. "
     "What they are actually asking is")
 
 
@@ -148,15 +148,15 @@ def _prompt(mensajes: list, pensamiento: str = "") -> str:
     partes = [f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n"
               for m in mensajes]
     if PENSAR and pensamiento:
-        # Cache acertado: el bloque va COMPLETO Y CERRADO. El pensamiento del
-        # catalogo ya termina en punto, asi que no hay nada que rematar y lo
-        # unico que genera el modelo es la respuesta.
+        # Cache acertado: el bloque va abierto, con el pensamiento generico
+        # adentro y espacio para que el modelo lo ate A ESTA pregunta.
         #
-        # Dejarlo abierto "para que lo cierre el" se probo y salio mal: se
-        # ponia a agregar una frase propia, el tope lo cortaba a la mitad, y
-        # arrastraba esa frase cortada a la respuesta — "me siento bien" en
-        # minuscula, continuando una oracion que nadie vio empezar.
-        partes.append(f"<|im_start|>assistant\n{ABRE}\n{pensamiento}\n{CIERRA}\n\n")
+        # Pre-cerrarlo se probo y fue peor: sin nada propio que pensar, el
+        # modelo contestaba con lo mas saliente del contexto — a cualquier cosa
+        # respondia "Jaime.", que es lo que la camara le acababa de decir que
+        # ve. El pensamiento del catalogo es generico por diseño; el unico que
+        # puede conectarlo con lo que le preguntaron es el.
+        partes.append(f"<|im_start|>assistant\n{ABRE}\n{pensamiento}")
     elif PENSAR and _prefijo():
         # Sin acierto: el prefijo generico, que igual le ahorra el ritual.
         partes.append(f"<|im_start|>assistant\n{ABRE}\n{_prefijo()}")
@@ -191,7 +191,22 @@ def cargar():
                      n_threads=n_hilos,
                      n_batch=512, verbose=False)
         _estado.update(cargado=True, ruta=os.path.basename(ruta), hilos_carga=n_hilos)
+        _sonar("despierta")
         return _llm
+
+
+def _sonar(evento: str) -> None:
+    """Import local y a prueba de fallos.
+
+    Local porque `tts_service` importa este modulo: a nivel de archivo seria un
+    ciclo. Y envuelto porque quedarse sin sonido no puede impedir que el modelo
+    cargue — el sonido es adorno, el modelo es el trabajo.
+    """
+    try:
+        from app.services import tts_service
+        tts_service.sonar(evento)
+    except Exception:
+        pass
 
 
 def descargar():
@@ -200,6 +215,7 @@ def descargar():
     with _lock_carga:
         _llm = None
         _estado.update(cargado=False, generando=False)
+    _sonar("duerme")
     return estado()
 
 
@@ -303,9 +319,21 @@ def generar(mensajes: list, al_token=None, gbnf: str | None = None,
             # Con cache el bloque ya esta cerrado en el prompt; la semilla se
             # emite igual para que la consola muestre lo que "penso", pero el
             # modelo no va a generar ni un token mas de pensamiento.
+            # EL <think> SE DEJA ABIERTO Y SE CIERRA POR TOPE. Se probo lo
+            # otro —meter el `</think>` ya cerrado en la semilla para que el
+            # primer token generado fuera de la respuesta— y fue peor de una
+            # forma que no se ve venir: el modelo NO respeta el cierre, sigue
+            # razonando igual, y como el filtro ya salio del modo `piensa` ese
+            # razonamiento se va al canal de la respuesta. Con el TTS conectado
+            # eso significa el bloque entero en ingles saliendo POR EL PARLANTE.
+            #
+            # En streaming no hay forma de arreglarlo aguas abajo: al emitir un
+            # token no se sabe todavia si mas adelante va a aparecer otro
+            # `</think>` que lo convierta en pensamiento. El bloque abierto, en
+            # cambio, es correcto por construccion — todo es pensamiento hasta
+            # el cierre, y el cierre lo ponemos nosotros.
             arranque = pensamiento or _prefijo()
-            semilla = (f"{ABRE}\n{arranque}\n{CIERRA}" if pensamiento
-                       else (f"{ABRE}\n{arranque}" if arranque else ""))
+            semilla = f"{ABRE}\n{arranque}" if arranque else ""
             # Con el pensamiento ya precargado no queda nada que derivar,
             # solo rematar la frase que le dejamos cortada. TOPE_CON_CACHE es
             # lo que separa "3 segundos" de "otro turno normal": sin el, el

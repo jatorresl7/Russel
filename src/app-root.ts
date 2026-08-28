@@ -57,6 +57,7 @@ function buildNavItems() {
     { path: '/vision',  label: t('nav.vision'),  iconKey: 'vision',  group: 'robot' },
     { path: '/robot',   label: t('nav.robot'),   iconKey: 'robot',   group: 'robot' },
     { path: '/caras',   label: t('nav.caras'),   iconKey: 'caras',   group: 'robot' },
+    { path: '/voz',     label: t('nav.voz'),     iconKey: 'sistema', group: 'sistema' },
     { path: '/sistema', label: t('nav.sistema'), iconKey: 'sistema', group: 'sistema' },
   ];
 }
@@ -106,6 +107,7 @@ export class AppRoot extends LitElement {
       { path: '/gmail',    component: 'gmail-page' },
       { path: '/conocimiento', component: 'conocimiento-page' },
       { path: '/grafo',    component: 'grafo-page' },
+      { path: '/voz',      component: 'voz-page' },
       // { path: '/scripts',  component: 'scripts-page' },
       // { path: '/tools',    component: 'tools-page' },
       { path: '/vision',   component: 'vision-page' },

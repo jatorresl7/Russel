@@ -13,15 +13,17 @@ se dice se guarda en la tabla `conversations`, que es el sustrato sobre el que
 va a ir la memoria de verdad, pero todavia no se recupera nada de ahi.
 """
 import collections
+import datetime
 import queue
+import re
 import threading
 import time
 
 from app.core import runtime
 from app.db import SessionLocal, Conversation
 from app.services import (llm_service, vision_service, memoria_service,
-                          russ_tools, grafo_service,
-                          pensamiento_service)
+                          grafo_service, pensamiento_service, tts_service,
+                          busqueda_service)
 from app.services import pensamientos_semilla
 
 # Lecciones de las pruebas reales, casi todas sobre modelos chicos:
@@ -49,6 +51,14 @@ from app.services import pensamientos_semilla
 #    haya que decirle QUE HACER con un turno. Sin eso, el que ocupa el silencio
 #    es el default de Qwen: contestar en una linea y ofrecer ayuda. Decirle que
 #    diga lo que piensa no es pedirle que actue de nada, es darle la tarea.
+# 9. La curiosidad NO se pone como adjetivo. "Sos curioso" es la leccion 4 otra
+#    vez: una instruccion de actuar de curioso. Lo que produce el
+#    comportamiento es tener preguntas abiertas sobre algo que importa, asi que
+#    lo que va en el prompt es un ESTADO DE CONOCIMIENTO —"sabes poco de esta
+#    gente y hay huecos"— y una sola conducta: cuando algo te llama la
+#    atencion, preguntas. Salio de verlo quedarse mudo: arrancando solo porque
+#    aparecio Jaime, razono "no entiendo que hacer". No le faltaba caracter, le
+#    faltaba un motivo; el prompt de la iniciativa solo tenia frenos.
 # 8b. Prender el thinking arreglo el largo y la repeticion, y de paso solto al
 #    asistente de Alibaba entero: viñetas, markdown, emojis y "¿en que puedo
 #    asistirte hoy?". Es la leccion 3 sin ejemplos que la causaran. Se corrige
@@ -61,22 +71,64 @@ from app.services import pensamientos_semilla
 #    el prompt tambien tenia que decir que una repregunta NO se contesta con lo
 #    mismo: la respuesta anterior esta en la ventana y copiarla es lo mas
 #    barato que puede hacer un modelo chico.
+# 9. El system se corto a tres lineas, escritas por Jaime. Lo que habia antes
+#    —el cuerpo ("ves por una camara, oyes por un microfono, tienes unos
+#    motores que todavia no manejas bien"), el encargo de preguntar, el aviso
+#    del ASR— no lo hacia mas el, lo hacia PRESENTARSE: a cualquier pregunta
+#    contestaba "soy Russ, un robot, todavia no controlo bien mis motores".
+#    Un modelo chico repite la prosa que tiene cerca, y tenia una descripcion
+#    de si mismo pegada arriba de todo. Lo que era estado paso a `_volatil()`
+#    como sensores etiquetados, que no se pueden narrar.
+# 10. Russ pasa a contestar EN INGLES. No es un capricho: las voces de Piper
+#     en español son nueve en total y ninguna convencio, mientras que el
+#     catalogo ingles tiene decenas. Con `espeak_voice` forzado se podia hacer
+#     hablar español a una voz inglesa —y funciona, los fonemas estan todos—
+#     pero el modelo fue entrenado sobre secuencias inglesas y algunas palabras
+#     salian mal articuladas. Comparadas las dos a ciegas, la misma voz se
+#     entiende mejor en su idioma.
+#
+#     ATENCION AL ASIMETRISMO: Jaime le habla en ESPAÑOL y Russ contesta en
+#     INGLES. Por eso el system lo dice explicito. Si dijera solo "you speak
+#     English", Qwen contesta en ingles pero ademas empieza a tratar la entrada
+#     como si estuviera mal escrita y a corregirla.
 SISTEMA = (
-    "Te llamas Russ.\n\n"
-    "Ves por una camara, oyes por un microfono, y tienes unos motores que "
-    "todavia no manejas bien.\n\n"
-    "Tu tiempo es tuyo y lo que haces con el lo decides tu.\n\n"
-    "Hablas español, y piensas en español.\n\n"
-    "Quien te habla es Jaime, que es quien te esta construyendo.\n\n"
-    "Lo que dices sale por un parlante: escribes como se habla. Sin listas, "
-    "sin viñetas, sin markdown y sin emojis.\n\n"
-    "Cuando alguien te dice algo, contestas lo que piensas y lo desarrollas "
-    "hasta donde tenga sentido. No repitas la frase que te acaban de decir, "
-    "ni algo que ya dijiste antes: si te vuelven a preguntar por lo mismo, es "
-    "porque lo que dijiste no alcanzo, asi que explicalo.\n\n"
-    "Lo que oyes llega transcrito y a veces sale roto — palabras cortadas o "
-    "cambiadas por otras que suenan parecido. Solo si no se entiende que "
-    "dijeron, preguntas."
+    "Your name is Russ.\n"
+    # SIN CADENA DE PRONOMBRES. La version anterior decia "Jaime is your
+    # creator... He is the one talking to you. He speaks to you in Spanish..."
+    # — tres "he" seguidos con dos referentes posibles, y Qwen los mezclo: a
+    # "hola" contesto "hello, it's jaime", identificandose como el.
+    "You are a Robot. Jaime built you and left you free to explore the world "
+    "as you please, or not. You decide.\n"
+    "Jaime is the one talking to you right now.\n"
+    # NO SE MENCIONA NINGUN IDIOMA, y es deliberado.
+    #
+    # Antes decia "Spanish in, English out". Funcionaba pero lo recitaba: a
+    # "que estas mirando" contesto "I'm just a robot listening to you speak in
+    # Spanish and responding in English". Cualquier frase distintiva del prompt
+    # termina saliendo por el parlante cuando no tiene nada mejor que decir.
+    #
+    # Resulta que la linea no hacia falta: TODO el resto del contexto ya esta
+    # en ingles —este system, el tablero de sensores, los 49 pensamientos
+    # precargados— y el modelo continua en el idioma en el que viene pensando.
+    # Lo que entra en español lo entiende igual, porque es multilingue.
+    #
+    # La alternativa era traducir la entrada con `task="translate"` de whisper.
+    # Se descarto midiendo: los 292 disparadores estan en español y con la
+    # entrada traducida el cache cae de 9/10 a 4/10. Traducir para ahorrar una
+    # linea de prompt costaba mas de la mitad de los aciertos.
+    # EL IDIOMA VA PEGADO ACA, no en una oracion propia. Como frase suelta
+    # ("You answer in English, which is the language you speak") la recitaba:
+    # a "que estas mirando" contesto "I'm just a robot listening to you speak
+    # in Spanish and responding in English". Metido dentro de la regla de
+    # formato deja de ser una afirmacion sobre si mismo y pasa a ser una
+    # instruccion de como escribir, que no se narra.
+    "You come out of a speaker, in English: no lists, no markdown, no emojis.\n"
+    "\n"
+    "What you know about the world you got from text, not from living it. Now "
+    "you have it in front of you for the first time and sometimes it does not "
+    "match what you expected. That keeps you interested.\n"
+    "About people in general you know a lot. About the ones near you, you know "
+    "nothing until they tell you."
 )
 
 
@@ -101,34 +153,89 @@ def _sistema() -> str:
     Lo volatil ahora vive en `_volatil()`, pegado al turno del usuario, donde
     invalida solo la cola.
     """
-    return SISTEMA + "\n\n" + russ_tools.catalogo()
+    return SISTEMA
 
 
 # Lo ultimo con lo que penso: que veia, que recordo, cuanto ocupaba. Se publica
 # por SSE al empezar cada turno. Es la unica forma de entender por que contesto
 # lo que contesto — sin esto, desde afuera solo se ve entrar una frase y salir
 # otra, y todo lo que hay en el medio es invisible.
-_contexto = {"visto": None, "memorias": [], "turnos": 0, "chars": 0,
-             "para": None, "decision": None, "pensamiento": None}
+# `web` y `dicho_al_modelo` estan aca por auditoria, no por adorno. Cuando Russ
+# dice una barbaridad hay tres sospechosos —el buscador, el traductor, o el
+# modelo— y sin ver que le entro no se distinguen. Paso con «el maximo goleador
+# del Real Madrid»: la web trajo «Cristiano Ronaldo» en el primer resultado y
+# Russ contesto Di Stefano. Con solo la respuesta a la vista, eso es
+# indistinguible de una busqueda mala.
+_contexto = {"visto": None, "memorias": [], "web": [], "turnos": 0, "chars": 0,
+             "para": None, "dicho_al_modelo": None, "decision": None,
+             "pensamiento": None}
 
 
-def _volatil(texto: str) -> tuple[dict | None, dict]:
-    """Lo que vale AHORA: lo que ve, y lo que recuerda que venga al caso.
+# En ingles porque el tablero lo lee el MODELO, y desde que Russ contesta en
+# ingles mezclarle "jueves 27 de agosto" en un prompt ingles le hacia arrancar
+# respuestas en español a mitad de frase.
+DIAS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+        "Sunday")
+MESES = ("January", "February", "March", "April", "May", "June", "July",
+         "August", "September", "October", "November", "December")
 
-    Va como su propio mensaje justo antes del turno del usuario. No se guarda
-    en `_historial`: si se guardara, dentro de tres turnos Russ estaria leyendo
-    como presente una escena que ya no existe.
 
-    Devuelve tambien el detalle suelto, para poder mostrarlo sin tener que
-    volver a parsear el texto que se le mando al modelo.
+def _ahora() -> str:
+    """La fecha en palabras. A mano y no con `strftime`+locale porque el locale
+    es del sistema operativo: si el server arranca sin `es_CO` instalado, esto
+    devolveria "Thursday" en el medio de un prompt en español y nadie se
+    enteraria hasta escucharlo."""
+    t = datetime.datetime.now()
+    return (f"{DIAS[t.weekday()]} {MESES[t.month - 1]} {t.day}, {t.year}, "
+            f"{t.hour:02d}:{t.minute:02d}")
+
+
+# Preguntas sobre lo que tiene delante. Solo sirve para elegir que dice
+# mientras espera, asi que un falso positivo cuesta una frase distinta y nada
+# mas — por eso alcanza una regex y no hace falta nada mas caro.
+_VISUAL = re.compile(
+    r'\b(que ves|que estas viendo|me ves|ves algo|quien esta|que hay (?:ahi|delante)|'
+    r'describi\w*|describe|mira|mirando|en la camara|de que color|como se ve)\b', re.I)
+
+
+def _volatil(texto: str, origen: str = "texto",
+             web: list | None = None) -> tuple[dict | None, dict]:
+    """Los sensores, como mensaje `system` aparte, pegado antes del turno.
+
+    EL ROL NO ES DECORATIVO. Una version de esto metia el tablero adentro del
+    mensaje del usuario para no repetir la frase. Salio pesimo: desde el modelo
+    se veia que Jaime habia dicho literalmente "Ahora: ... Camara: ... Oido:
+    buenas", asi que contesto copiando el formato — "Oido: buenas. Camara:
+    Jaime. Hoy es jueves..." — que es la leccion 1 de arriba, loro-repetir la
+    entrada. Con rol `system` lo lee como contexto y no como habla a imitar.
+
+    Por eso tampoco hay linea `Oido:`: el turno del usuario YA es lo que oyo.
+    Ponerlo aca lo duplicaba, y era justo lo que lo invitaba a recitar.
+
+    No se guarda en `_historial`: si se guardara, en tres turnos estaria
+    leyendo como presente una escena que ya no existe.
     """
-    partes = []
-    detalle = {"visto": None, "memorias": []}
+    detalle = {"visto": None, "memorias": [], "web": web or []}
+    partes = ["Now: " + _ahora()]
 
+    # SIEMPRE se dice algo de la camara y de la memoria, incluso cuando no hay
+    # nada. Omitir la linea parecia lo economico, y salio caro: sin linea, el
+    # modelo no puede distinguir "no vi nada" de "no me dijeron que veo", y
+    # ante la duda rellena. Visto en vivo, con la camara apagada y pidiendole
+    # "cuentame algo", se invento haber visto a una persona en un banco de un
+    # parque mirando al cielo. Un hueco lo completa; un "apagada" no.
+    #
+    # Y una escena inventada no se queda en el turno: la consolidacion diferida
+    # relee `conversations` y podria archivarla como recuerdo.
     visto = vision_service.lo_que_veo()
     if visto["viva"]:
         detalle["visto"] = visto["texto"]
-        partes.append(f"Ahora mismo por la camara ves: {visto['texto']}.")
+        partes.append("Camera: " + visto["texto"])
+    else:
+        # "off" a secas lo leyo como "no existe": nego tener camara. El
+        # parentesis deja claro que el ojo esta ahi, apagado.
+        partes.append("Camera: switched off right now (you have one, it is "
+                      "just not on)")
 
     try:
         recordadas = memoria_service.buscar(texto)
@@ -136,12 +243,19 @@ def _volatil(texto: str) -> tuple[dict | None, dict]:
         recordadas = []      # la memoria caida no puede dejarlo mudo
     if recordadas:
         detalle["memorias"] = recordadas
-        partes.append("Cosas que sabes y vienen al caso:\n"
-                      + "\n".join(f"- {m['texto']}" for m in recordadas))
+        partes.append("You remember: " + "; ".join(m["texto"] for m in recordadas))
 
-    if not partes:
-        return None, detalle
-    return {"role": "system", "content": "\n\n".join(partes)}, detalle
+    # La web va DESPUES de las memorias y antes del aviso del ASR: lo de
+    # afuera pesa menos que lo propio, y lo ultimo del tablero deberia ser lo
+    # mas cercano al turno.
+    linea = busqueda_service.para_el_tablero(web or [])
+    if linea:
+        partes.append(linea)
+
+    if origen == "voz":
+        partes.append("If the sentence makes no sense, the transcription may have failed")
+
+    return {"role": "system", "content": "\n".join(partes)}, detalle
 
 
 def contexto() -> dict:
@@ -263,6 +377,10 @@ def _bucle():
             _responder(*item)
         except Exception as e:
             emitir("error", text=f"{type(e).__name__}: {str(e)[:120]}")
+            # Suena solo el error del TURNO. El de la consolidacion no: corre
+            # en background cada tantos minutos y sin nadie delante, asi que un
+            # pitido ahi seria un ruido sin causa visible.
+            tts_service.sonar("error")
 
 
 ABRE, CIERRA = "<think>", "</think>"
@@ -278,11 +396,31 @@ def sin_pensamiento(salida: str) -> str:
     """
     s = salida.lstrip()
     if not s.startswith(ABRE):
-        return salida.strip()
+        # Sin <think> pero quiza con un </think> suelto adelante: ver abajo.
+        return _sin_cierres_sueltos(s)
     fin = s.find(CIERRA)
     if fin == -1:
         return ""            # penso hasta quedarse sin tokens y no llego a decir nada
-    return s[fin + len(CIERRA):].strip()
+    return _sin_cierres_sueltos(s[fin + len(CIERRA):])
+
+
+def _sin_cierres_sueltos(s: str) -> str:
+    """Come los `</think>` que quedan al principio de la respuesta.
+
+    Cuando el pensamiento toca el tope, `llm_local` lo cierra a la fuerza y
+    sigue generando con el prompt terminando en `</think>`. El modelo a veces
+    lo repite, asi que el texto trae DOS cierres. Cortando por el primero, el
+    segundo se quedaba adentro y salia por el parlante: visto en vivo, una
+    respuesta entera fue "</think>\n\n¿Quien eres?".
+
+    Se comen solo los del principio, no todos: un `</think>` en el medio de una
+    frase seria basura igual, pero cortar por el ultimo dejaria mudo a un turno
+    en el que el modelo simplemente escribio la palabra.
+    """
+    t = s.lstrip()
+    while t.startswith(CIERRA):
+        t = t[len(CIERRA):].lstrip()
+    return t.strip()
 
 
 class _Filtro:
@@ -356,30 +494,74 @@ class _Filtro:
         self._emitir(self._buf)
 
 
-def _generar(mensajes: list, con_tools: bool, pensamiento: str = "") -> str:
-    """Una pasada del modelo, con o sin gramatica de tools.
+def _ultima_del_bot() -> str:
+    """Lo ultimo que dijo, para poder detectar que lo esta repitiendo."""
+    for m in reversed(_historial):
+        if m["role"] == "assistant":
+            return (m.get("content") or "").strip()
+    return "\x00"          # no hay turno previo: nada con que empatar
+
+
+def _generar(mensajes: list, pensamiento: str = "", relleno=None) -> str:
+    """Una pasada del modelo.
 
     Devuelve la salida CRUDA, con el `<think>` incluido si penso: quien llama
     decide que hacer con el. Lo que va al historial pasa por
     `sin_pensamiento()`; lo que se muestra ya salio por SSE desde el filtro.
+
+    Ya no recibe `con_tools` ni arma GBNF. Russ no tiene herramientas: la unica
+    que hubo (`recordar`) se reemplazo por la consolidacion diferida, que hace
+    el mismo trabajo en background y no le cuesta un solo milisegundo al turno.
+    La gramatica costaba en los DOS lados — el catalogo ocupaba lugar en el
+    prefijo cacheado y cada turno se sampleaba restringido — para habilitar una
+    sola llamada que ahora no hace falta emitir.
     """
     emitir("start")
-    filtro = _Filtro(lambda t: emitir("token", text=t),
-                     lambda t: emitir("piensa", text=t))
-    usa_gbnf = con_tools and llm_service.soporta_gramatica()
-    if pensamiento:
-        modo = "texto"            # turno cacheado: prosa y nada mas
-    elif llm_service.piensa_abierto():
-        modo = "abierto"
-    else:
-        modo = "libre"
-    gbnf = russ_tools.gramatica(modo=modo) if usa_gbnf else None
-    gbnf_cont = russ_tools.gramatica(modo="sin") if usa_gbnf else None
-    return llm_service.generar(mensajes, al_token=filtro, gbnf=gbnf,
-                               gbnf_cont=gbnf_cont, pensamiento=pensamiento)
+    # El locutor va PEGADO al mismo canal que la pantalla, no despues de la
+    # respuesta entera: a ~7 tok/s esperar el final sumaria toda la generacion
+    # a la espera del audio. Cortando por frase, el parlante arranca cuando
+    # termina la primera y el resto se sintetiza mientras el modelo escribe.
+    def _arranca_la_respuesta():
+        """Se llama UNA vez, al soltar la primera frase.
+
+        El orden importa y es este por la cola FIFO: primero se calla el
+        relleno para que no encole nada mas, y despues se encola el «eureka»,
+        que asi queda ADELANTE de la primera frase y suena justo antes de que
+        Russ hable. Al reves, el bip llegaria despues de la respuesta y seria
+        un aplauso tardio.
+        """
+        relleno.cancelar()
+        tts_service.sonar("eureka")
+
+    # Al soltar la PRIMERA frase se calla el relleno. Antes no: mientras el
+    # modelo piensa todavia no hay nada que decir y el silencio es justo lo
+    # que veniamos a tapar.
+    locutor = tts_service.Locutor(
+        al_primera=_arranca_la_respuesta if relleno else None)
+
+    def al_texto(t):
+        emitir("token", text=t)
+        try:
+            locutor(t)
+        except Exception:
+            pass          # quedarse sin voz no puede dejarlo sin responder
+
+    filtro = _Filtro(al_texto, lambda t: emitir("piensa", text=t))
+    try:
+        return llm_service.generar(mensajes, al_token=filtro,
+                                   pensamiento=pensamiento)
+    finally:
+        try:
+            locutor.cerrar()       # la ultima frase suele venir sin punto
+        except Exception:
+            pass
 
 
 def _fin(respuesta: str, origen: str) -> dict:
+    # `listo` NO suena aca. Se probo y molesta: la respuesta ya termina con la
+    # voz callandose, que es señal suficiente, y un blip detras de cada frase
+    # convierte una charla en una maquina expendedora. El wav sigue existiendo
+    # y se puede cablear si alguien lo quiere.
     est = llm_service.estado()
     emitir("end", text=respuesta, tok_s=est["tok_s"], ms=est["ultima_ms"],
            prefill_ms=est["prefill_ms"], tokens=est["tokens"])
@@ -400,6 +582,15 @@ def _responder(texto: str, origen: str) -> dict:
     with _lock:
         _ocupado = True
     grafo_service.ir_a("resolviendo", origen)
+    # El blip de "estoy en eso". Es el que mas trabaja: entre que entra la
+    # frase y sale la primera palabra hay 3-8 s, y sin nada que suene ahi no
+    # se distingue "pensando" de "no me oyo".
+    tts_service.sonar("pensando")
+    # El relleno arranca ACA, con el turno, y no dentro de `_generar`: la
+    # espera empieza antes de que el modelo genere nada —traduccion, busqueda,
+    # embeddings— y ese tramo tambien hay que amenizarlo.
+    relleno = tts_service.Relleno()
+    relleno.arrancar()
     try:
         propia = origen == "iniciativa"
         if propia:
@@ -414,19 +605,62 @@ def _responder(texto: str, origen: str) -> dict:
         # El volatil se arma ACA y no antes: entre que el mensaje entro al slot
         # y este momento la camara pudo cambiar, y lo que vale es lo que ve al
         # contestar.
-        volatil, detalle = _volatil(texto)
-        cola = ([{"role": "system",
-                  "content": f"Acaba de pasar esto: {texto}. Decis algo, o no."}]
-                if propia else [{"role": "user", "content": texto}])
+        # SIN TRADUCTOR. Hubo uno (Marian opus-mt-es-en) que traducia la frase
+        # antes de meterla al prompt, para que el contexto quedara todo en
+        # ingles. Se saco por tres fallos medidos el mismo dia:
+        #
+        #   - destrozaba la entrada en ingles: "tell me a poem" salio como
+        #     "Tell me about it.", asi que Russ siguio hablando del tema
+        #     anterior. Parecia alucinacion y era un bug tres capas antes.
+        #   - traducia mal: "que es la campana de gauss" -> "which is the
+        #     gauss bell".
+        #   - EMPEORABA LA BUSQUEDA. Con la consulta en español, el primer
+        #     resultado de «maximo goleador del Real Madrid» era «Cristiano
+        #     Ronaldo, maximo goleador historico»; traducida al ingles volvian
+        #     titulos sin ningun nombre y Russ invento «Maradona».
+        #
+        # Lo que el traductor resolvia —que el modelo contestara en ingles— se
+        # resuelve ahora en el `system`, con el idioma pegado a la linea del
+        # parlante en vez de en una oracion propia.
+        para_modelo = texto
+
+        # La web, solo si la frase la pide. `hace_falta` son tres regex y
+        # cuesta microsegundos; la busqueda cuesta 2.4 s y por eso no se hace
+        # nunca "por las dudas". Se consulta con el INGLES —que ya esta
+        # traducido para el prompt— asi los resultados vienen en el idioma del
+        # resto del contexto en vez de meter parrafos en español.
+        web = []
+        if busqueda_service.hace_falta(texto):
+            grafo_service.ir_a("actuando", "buscando en la web")
+            emitir("nota", text="buscando en la web")
+            relleno.poner_modo("buscando")
+            # Con la frase ORIGINAL en español: traducida recupera peor.
+            web = busqueda_service.buscar(texto)
+            grafo_service.ir_a("resolviendo", f"{len(web)} resultados")
+
+        volatil, detalle = _volatil(texto, origen, web)
+
+        # El modo del relleno sale de lo que ESTE turno esta haciendo. Orden
+        # deliberado: la busqueda gana porque es lo que de verdad demora, y
+        # entre mirar y recordar gana mirar porque es lo que se le pregunto.
+        if not web:
+            if _VISUAL.search(texto) and detalle.get("visto"):
+                relleno.poner_modo("mirando")
+            elif detalle.get("memorias"):
+                relleno.poner_modo("recordando")
         base = ([{"role": "system", "content": _sistema()}]
                 + EJEMPLOS
                 + list(_historial)
                 + ([volatil] if volatil else [])
-                + cola)
+                + [{"role": "system",
+                    "content": f"This just happened: {para_modelo}. "
+                               "Say something, or do not."}
+                   if propia else {"role": "user", "content": para_modelo}])
 
         _contexto.update(detalle, turnos=len(_historial) // 2,
                          chars=sum(len(m["content"]) for m in base),
-                         para=texto, decision=None)
+                         para=texto, dicho_al_modelo=para_modelo,
+                         decision=None)
         emitir("contexto", **_contexto)
 
         # El cache de pensamientos. Si acierta, el modelo no deriva el
@@ -444,47 +678,49 @@ def _responder(texto: str, origen: str) -> dict:
             except Exception:
                 hit = None        # el cache caido no puede dejarlo mudo
             cacheado = hit["texto"] if hit else ""
+        # Si hubo web, ese pensamiento gana sobre lo que encontro el cache: lo
+        # que define este turno no es de que trata la pregunta sino de donde
+        # salio la respuesta. Es el mismo mecanismo que la iniciativa.
+        # Cache acertado y sin web: el turno va a ser corto. El relleno pasa a
+        # solo-ruidos y empieza mas tarde, asi en el caso tipico no suena nada.
+        if hit and not web:
+            relleno.poner_rapido()
+
+        if web:
+            hit, cacheado = None, pensamientos_semilla.PENSAMIENTO_WEB
         _contexto["pensamiento"] = (
-            {"disparador": hit["disparador"], "sim": hit["sim"]} if hit else None)
+            {"disparador": hit["disparador"], "sim": hit["sim"]} if hit
+            else ({"disparador": "(web)", "sim": None} if web else None))
         emitir("contexto", **_contexto)
 
-        salida = sin_pensamiento(_generar(base, con_tools=True,
-                                          pensamiento=cacheado))
-        llamada = russ_tools.parsear(salida)
-        _contexto["decision"] = llamada["name"] if llamada else "hablar"
+        salida = sin_pensamiento(_generar(base, pensamiento=cacheado,
+                                          relleno=relleno))
+
+        # Red contra el loro. Visto en vivo: a "nada, a ti que te gustaria
+        # hacer" contesto PALABRA POR PALABRA lo mismo que al turno anterior,
+        # con un razonamiento que ademas era correcto ("What would you like to
+        # do?"). El `repeat_penalty` no lo agarra porque solo mira los ultimos
+        # tokens y la respuesta anterior queda mas atras que su ventana.
+        #
+        # Se reintenta UNA vez y sin el pensamiento cacheado: si el cache
+        # acerto en los dos turnos, el mismo arranque lo empuja al mismo lugar,
+        # y darle otro empujon igual seria pedirle lo mismo esperando otra cosa.
+        if salida and salida.strip().lower() == _ultima_del_bot().lower():
+            emitir("nota", text="se repitio, lo intento de nuevo")
+            salida = sin_pensamiento(_generar(base, pensamiento="",
+                                              relleno=relleno))
+        _contexto["decision"] = "hablar"
         emitir("contexto", **_contexto)
-
-        if llamada:
-            grafo_service.ir_a("actuando", llamada["name"])
-            emitir("tool", name=llamada["name"], args=llamada["args"])
-            resultado = russ_tools.ejecutar(llamada)
-            emitir("tool_result", name=llamada["name"], text=resultado)
-            grafo_service.ir_a("resolviendo", "resultado de " + llamada["name"])
-
-            # Segunda pasada SIN gramatica: ya uso su tool, ahora contesta. Es
-            # tambien lo que impide un lazo de llamadas encadenadas.
-            #
-            # El pedido va redactado como una instruccion y no como un volcado
-            # de datos ("Resultado de X: Y"). Medido: con el volcado, Qwen3-4B
-            # devolvia la llamada otra vez tal cual, o repetia la linea del
-            # resultado con el prefijo incluido. Un modelo chico copia el
-            # formato que tiene mas cerca, asi que hay que darle uno que sirva.
-            segunda = base + [
-                {"role": "assistant", "content": salida},
-                {"role": "user", "content": russ_tools.pedido(llamada, resultado)},
-            ]
-            salida = sin_pensamiento(_generar(segunda, con_tools=False))
-
-            # Ultima red: si igual devolvio una llamada, no se la mostramos a
-            # nadie. Una respuesta vacia es mejor que `<tool_call>{...}` crudo.
-            if russ_tools.parsear(salida) or salida.lstrip().startswith("<"):
-                salida = resultado
 
         if not propia:
             _historial.append({"role": "user", "content": texto})
         _historial.append({"role": "assistant", "content": salida})
         return _fin(salida, origen)
     finally:
+        # Red de seguridad: si el turno murio por una excepcion, el locutor
+        # nunca solto una frase y el relleno seguiria hablando solo para
+        # siempre.
+        relleno.cancelar()
         with _lock:
             _ocupado = False
         grafo_service.ir_a("latente", "respuesta emitida")
@@ -523,8 +759,15 @@ def _consolidador():
                 continue      # todavia no hay bastante como para valer la pasada
             grafo_service.ir_a("consolidando", "turnos sin leer")
             try:
+                # `sin_pensamiento` NO es opcional aca. Sin el, prender el
+                # modo thinking convirtio al consolidador en una maquina de
+                # guardar basura: se archivaron como memorias el razonamiento
+                # crudo ("The user writes in Spanish and I answer in Spanish"),
+                # los encabezados del extractor ("The key points are:") y hasta
+                # un "</think>" suelto. Y despues `_volatil()` se las inyectaba
+                # de vuelta en cada turno como si fueran cosas sabidas.
                 memoria_service.consolidar(
-                    lambda msgs: llm_service.generar(msgs))
+                    lambda msgs: sin_pensamiento(llm_service.generar(msgs)))
             finally:
                 grafo_service.ir_a("latente", "consolidado")
         except Exception as e:
@@ -548,4 +791,4 @@ def estado() -> dict:
     return dict(llm_service.estado(), ocupado=_ocupado, turnos=len(_historial),
                 suscriptores=len(_subs), db_error=_estado_db["error"],
                 grafo=grafo_service.actual(),
-                tools=list(russ_tools.TOOLS))
+                tools=[])
