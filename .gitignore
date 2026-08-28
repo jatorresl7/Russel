@@ -26,3 +26,8 @@ voces/
 # sonidos de evento: los de fabrica los regenera `python generar_sonidos.py`,
 # y los que grabes vos son tuyos y no del repo
 sonidos/
+
+# stdout del benchmark. Los RESULTADOS si van al repo (benchmark.jsonl): son
+# 2.6 h de CPU y son la evidencia detras de los parametros elegidos. El log es
+# solo el progreso.
+bench.log

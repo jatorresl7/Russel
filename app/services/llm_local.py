@@ -39,6 +39,12 @@ TAMANOS = {
     "0.6b": ("Qwen/Qwen3-0.6B-GGUF", "Qwen3-0.6B-Q8_0.gguf"),
     "1.7b": ("Qwen/Qwen3-1.7B-GGUF", "Qwen3-1.7B-Q8_0.gguf"),
     "4b": ("Qwen/Qwen3-4B-GGUF", "Qwen3-4B-Q4_K_M.gguf"),
+    # Generacion siguiente, misma clase de cuantizacion que el 4b de arriba.
+    # Se agrega como opcion y no como reemplazo: todo lo medido en este
+    # proyecto —los topes del <think>, los parametros, la redaccion del
+    # system— salio contra Qwen3-4B, y hasta que el benchmark diga otra cosa
+    # ese sigue siendo el conocido.
+    "3.5-4b": ("unsloth/Qwen3.5-4B-GGUF", "Qwen3.5-4B-UD-Q4_K_XL.gguf"),
 }
 TAMANO = os.environ.get("JARVIS_LLM", "0.6b").lower()
 REPO, ARCHIVO = TAMANOS.get(TAMANO, TAMANOS["0.6b"])
@@ -114,9 +120,20 @@ PREFIJO_PENSAMIENTO = os.environ.get(
 
 def _prefijo() -> str:
     return PREFIJO_PENSAMIENTO if (PENSAR and PREFIJO_PENSAMIENTO.strip()) else ""
-TEMPERATURA = 0.7      # valores que recomienda Qwen para el modo no-thinking
-TOP_P = 0.8
-TOP_K = 20
+# LOS VALORES DEPENDEN DE SI EL THINKING ESTA PRENDIDO, y no son los mismos.
+# Qwen publica dos juegos y aca se estaba usando el equivocado: el comentario
+# decia «los que recomienda Qwen para el modo no-thinking» mientras `PENSAR`
+# estaba en 1.
+#
+#   thinking ON   temp 0.6  top_p 0.95  top_k 20
+#   thinking OFF  temp 0.7  top_p 0.80  top_k 20
+#
+# El que mas cambia es `top_p`: 0.80 recorta la distribucion bastante mas que
+# 0.95, y en un modelo que razona antes de contestar eso poda el razonamiento,
+# no solo la redaccion.
+TEMPERATURA = float(os.environ.get("JARVIS_TEMP", "0.6" if PENSAR else "0.7"))
+TOP_P = float(os.environ.get("JARVIS_TOP_P", "0.95" if PENSAR else "0.8"))
+TOP_K = int(os.environ.get("JARVIS_TOP_K", "20"))
 
 # llama-cpp-python trae `repeat_penalty=1.0` por defecto, o sea NINGUNA. Sin
 # esto, Qwen3-4B-Q4 se clava: contesto "porque no estoy seguro. ¿que tal tu?"
@@ -125,8 +142,14 @@ TOP_K = 20
 # que cada repeticion hace la siguiente mas probable. 1.15 la corta sin que
 # empiece a buscar sinonimos raros; con `presence_penalty` bajo porque Qwen
 # avisa que subirlo mezcla idiomas, y aca contesta en español.
-REPEAT_PENALTY = 1.15
-PRESENCE_PENALTY = 0.6
+REPEAT_PENALTY = float(os.environ.get("JARVIS_REPEAT_PENALTY", "1.15"))
+
+# BAJO A PROPOSITO. Qwen avisa que subirlo mezcla idiomas, y eso dejo de ser
+# teorico el dia que Russ paso a contestar en ingles: se le escapaban
+# respuestas enteras en español. Estaba en 0.6, que para esa advertencia es
+# alto. La repeticion la corta `repeat_penalty`, que es el que se midio contra
+# el problema real.
+PRESENCE_PENALTY = float(os.environ.get("JARVIS_PRESENCE_PENALTY", "0.2"))
 
 CORTES = ["<|im_end|>", "<|endoftext|>"]
 
